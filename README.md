@@ -2,13 +2,11 @@
 Purdue University Northwest CS52550 Group Project - Team 2 
 Mission:
 
-Identify vehicles and its speed from highway cameras. A demo video has been attached, which is only for your reference.
+Identify vehicles and its speed from highway cameras. 
 
 Data Sources:
 
 https://511in.org/
-
-Each team has its unique camera.
 
 Minimal Requirements
 
