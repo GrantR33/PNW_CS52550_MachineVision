@@ -1,0 +1,135 @@
+from ultralytics import YOLO
+import cv2
+import numpy as np
+from sklearn.cluster import KMeans
+from matplotlib import colors
+
+video_path = '/content/Road1.mp4'
+
+model = YOLO('yolov8n.pt')
+
+def extract_car_bounding_boxes(detections, image, class_id=2):
+    car_images = []
+    for det in detections:
+        if int(det.cls.item()) == class_id:
+            # Convert tensor to list, making sure to flatten if needed
+            bbox = det.xyxy.flatten().tolist()
+
+            if len(bbox) == 4:
+                x1, y1, x2, y2 = map(int, bbox)
+
+                # Ensure coordinates are within image bounds
+                x1 = max(x1, 0)
+                y1 = max(y1, 0)
+                x2 = min(x2, image.shape[1] - 1)
+                y2 = min(y2, image.shape[0] - 1)
+
+                car_img = image[y1:y2, x1:x2]
+                car_images.append((car_img, (x1, y1, x2, y2)))
+            else:
+                print(f"Unexpected bbox length: {len(bbox)} in detection {det}")
+    return car_images
+
+def get_dominant_color(image, k=3):
+    if image.size == 0:
+        return (0, 0, 0)
+    image = cv2.resize(image, (250, 250))
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    pixels = image.reshape((-1, 3))
+    kmeans = KMeans(n_clusters=k, random_state=42)
+    kmeans.fit(pixels)
+    counts = np.bincount(kmeans.labels_)
+    dominant = kmeans.cluster_centers_[np.argmax(counts)]
+    return tuple(dominant.astype(int))
+
+def rgb_to_color_name(rgb_color):
+    css_colors = colors.CSS4_COLORS
+    min_dist = float('inf')
+    closest_color = None
+    for name, hex in css_colors.items():
+        r, g, b = colors.to_rgb(hex)
+        r, g, b = int(r * 255), int(g * 255), int(b * 255)
+        dist = np.sqrt((r - rgb_color[0])**2 + (g - rgb_color[1])**2 + (b - rgb_color[2])**2)
+        if dist < min_dist:
+            min_dist = dist
+            closest_color = name
+    return closest_color
+
+# Define the video processing function
+def process_video(input_video_path, output_video_path='Road_with_Turn_Annotated.mp4'):
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened():
+        print(f"Error: Cannot open video {input_video_path}")
+        return
+
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    print(f"Video properties: {frame_width}x{frame_height} at {fps} FPS, {total_frames} total frames.")
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("No more frames to read. Exiting...")
+            break  # End of video
+
+        frame_count += 1
+        print(f"Processing frame {frame_count}/{total_frames}")
+
+        results = model(frame)
+
+        if results[0].boxes is None or len(results[0].boxes) == 0:
+            print(f"No detections in frame {frame_count}.")
+            continue
+
+        car_detections = extract_car_bounding_boxes(results[0].boxes, frame, class_id=2)
+
+        if not car_detections:
+            print(f"No cars detected in frame {frame_count}.")
+            continue
+
+        for car_img, (x1, y1, x2, y2) in car_detections:
+            if any(coord < 0 for coord in [x1, y1, x2, y2]) or x1 >= frame_width or x2 >= frame_width or y1 >= frame_height or y2 >= frame_height:
+                print(f"Invalid bounding box coordinates: {(x1, y1, x2, y2)}")
+                continue 
+
+            dominant_color = get_dominant_color(car_img)
+            color_name = rgb_to_color_name(dominant_color)
+
+            annotation_color_bgr = tuple(int(c) for c in (dominant_color[2], dominant_color[1], dominant_color[0]))
+
+            if not all(isinstance(c, int) and 0 <= c <= 255 for c in annotation_color_bgr):
+                print(f"Invalid color value: {annotation_color_bgr}")
+                continue 
+
+            try:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), annotation_color_bgr, 2)
+            except Exception as e:
+                print(f"Error drawing rectangle: {e} with coordinates {(x1, y1, x2, y2)} and color {annotation_color_bgr}")
+                continue  
+
+            label = f"{color_name}"
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            label_ymin = max(y1, label_size[1] + 10)
+
+            cv2.rectangle(frame, (x1, label_ymin - label_size[1] - 10),
+                                 (x1 + label_size[0], label_ymin + 5), annotation_color_bgr, cv2.FILLED)
+
+            cv2.putText(frame, label, (x1, label_ymin - 5), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        out.write(frame)
+
+    cap.release()
+    out.release()
+
+    print("Processing complete.")
+    files.download(output_video_path)
+
+process_video(video_path)
